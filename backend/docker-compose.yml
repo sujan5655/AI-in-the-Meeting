@@ -1,0 +1,60 @@
+services:
+  web:
+    build: .
+    container_name: ai-meeting-web
+    restart: unless-stopped
+    command: daphne -b 0.0.0.0 -p 8000 config.asgi:application
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      # Redis – use the SERVICE name + internal port
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      # Postgres – use the SERVICE name + internal port
+      DB_HOST: postgres # or POSTGRES_HOST, depending on what your settings.py reads
+      DB_PORT: 5432
+      DB_NAME: ai_meeting
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+
+      # Keep any other env vars you need (GROQ_API_KEY etc.)
+    depends_on:
+      - postgres
+      - redis
+    # Optional but clearer
+    networks:
+      - ai-meeting-net
+
+  postgres:
+    image: postgres:17
+    container_name: ai-meeting-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ai_meeting
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5438:5432" # only for host access (optional)
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ai-meeting-net
+
+  redis:
+    image: redis:7
+    container_name: ai-meeting-redis
+    restart: unless-stopped
+    ports:
+      - "6385:6379" # only for host access (optional)
+    networks:
+      - ai-meeting-net
+
+volumes:
+  postgres_data:
+
+networks:
+  ai-meeting-net:
+    driver: bridge
