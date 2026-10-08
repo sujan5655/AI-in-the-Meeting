@@ -432,13 +432,14 @@
         </div>
       </section>
     </main>
-
     <script>
       let socket = null;
       let meetingId = null;
+
       let mediaStream = null;
       let mediaRecorder = null;
       let isRecording = false;
+      let audioChunks = [];
 
       // ==========================================
       // CONNECT WEBSOCKET
@@ -454,6 +455,8 @@
         socket = new WebSocket("ws://127.0.0.1:8000/ws");
 
         socket.onopen = function () {
+          console.log("WebSocket connected");
+
           updateConnectionStatus("connected");
 
           document.getElementById("meetingStatus").textContent = "Active";
@@ -468,9 +471,9 @@
           try {
             const data = JSON.parse(event.data);
 
-            // ==============================
+            // ==========================================
             // CONNECTION
-            // ==============================
+            // ==========================================
 
             if (data.type === "connection") {
               meetingId = data.meeting_id;
@@ -478,12 +481,39 @@
               document.getElementById("meetingId").textContent =
                 "Meeting ID: " + meetingId;
 
+              console.log("Meeting ID:", meetingId);
+
               return;
             }
 
-            // ==============================
+            // ==========================================
+            // TRANSCRIBING
+            // ==========================================
+
+            if (data.type === "transcribing") {
+              document.getElementById("aiStatus").textContent = "Transcribing";
+
+              document.getElementById("aiStatusDescription").textContent =
+                data.message;
+
+              return;
+            }
+
+            // ==========================================
+            // TRANSCRIPT
+            // ==========================================
+
+            if (data.type === "transcript") {
+              console.log("Whisper transcript:", data.text);
+
+              addTranscriptMessage(data.text);
+
+              return;
+            }
+
+            // ==========================================
             // PROCESSING
-            // ==============================
+            // ==========================================
 
             if (data.type === "processing") {
               document.getElementById("aiStatus").textContent = "Analyzing";
@@ -494,9 +524,9 @@
               return;
             }
 
-            // ==============================
+            // ==========================================
             // MEETING RESULT
-            // ==============================
+            // ==========================================
 
             if (data.type === "meeting_result") {
               updateTranscript(data.transcript);
@@ -522,12 +552,19 @@
               return;
             }
 
-            // ==============================
+            // ==========================================
             // ERROR
-            // ==============================
+            // ==========================================
 
             if (data.type === "error") {
+              console.error("Server error:", data.message);
+
               showError(data.message);
+
+              document.getElementById("aiStatus").textContent = "Error";
+
+              document.getElementById("aiStatusDescription").textContent =
+                "Something went wrong";
 
               return;
             }
@@ -536,7 +573,17 @@
           }
         };
 
-        socket.onclose = function () {
+        socket.onclose = function (event) {
+          console.error("WebSocket closed:", {
+            code: event.code,
+            reason: event.reason,
+            wasClean: event.wasClean,
+          });
+
+          if (isRecording) {
+            stopMicrophone();
+          }
+
           updateConnectionStatus("disconnected");
 
           document.getElementById("meetingStatus").textContent = "Disconnected";
@@ -556,11 +603,23 @@
         };
       }
 
+      // ==========================================
+      // MICROPHONE
+      // ==========================================
+
       async function toggleMicrophone() {
+        // ------------------------------------------
+        // STOP
+        // ------------------------------------------
+
         if (isRecording) {
           stopMicrophone();
           return;
         }
+
+        // ------------------------------------------
+        // CHECK WEBSOCKET
+        // ------------------------------------------
 
         if (!socket || socket.readyState !== WebSocket.OPEN) {
           showError("Please connect to the meeting first.");
@@ -568,68 +627,162 @@
         }
 
         try {
+          // ----------------------------------------
+          // GET MICROPHONE
+          // ----------------------------------------
+
           mediaStream = await navigator.mediaDevices.getUserMedia({
             audio: true,
           });
 
+          console.log("Microphone permission granted");
+
+          // ----------------------------------------
+          // RESET AUDIO CHUNKS
+          // ----------------------------------------
+
+          audioChunks = [];
+
+          // ----------------------------------------
+          // CREATE MEDIA RECORDER
+          // ----------------------------------------
+
           mediaRecorder = new MediaRecorder(mediaStream);
+
+          console.log("MediaRecorder MIME type:", mediaRecorder.mimeType);
+
+          // ----------------------------------------
+          // START
+          // ----------------------------------------
 
           mediaRecorder.onstart = function () {
             isRecording = true;
 
             updateMicrophoneUI(true);
 
+            document.getElementById("aiStatus").textContent = "Listening";
+
+            document.getElementById("aiStatusDescription").textContent =
+              "Microphone is recording";
+
             console.log("Microphone started");
           };
 
-          mediaRecorder.ondataavailable = function (event) {
-            if (
-              event.data &&
-              event.data.size > 0 &&
-              socket &&
-              socket.readyState === WebSocket.OPEN
-            ) {
-              console.log("Sending audio chunk:", event.data.size, "bytes");
+          // ----------------------------------------
+          // STORE AUDIO CHUNKS
+          // ----------------------------------------
 
-              socket.send(event.data);
+          mediaRecorder.ondataavailable = function (event) {
+            if (event.data && event.data.size > 0) {
+              audioChunks.push(event.data);
+
+              console.log("Recorded chunk:", event.data.size, "bytes");
             }
           };
 
+          // ----------------------------------------
+          // ERROR
+          // ----------------------------------------
+
           mediaRecorder.onerror = function (event) {
             console.error("MediaRecorder error:", event.error);
+
+            showError("Microphone recording failed.");
           };
 
-          mediaRecorder.onstop = function () {
+          // ----------------------------------------
+          // STOP
+          // ----------------------------------------
+
+          mediaRecorder.onstop = async function () {
             console.log("Microphone stopped");
+
+            try {
+              // ----------------------------------
+              // CREATE COMPLETE AUDIO FILE
+              // ----------------------------------
+
+              const mimeType = mediaRecorder.mimeType || "audio/webm";
+
+              const audioBlob = new Blob(audioChunks, {
+                type: mimeType,
+              });
+
+              console.log("Complete audio size:", audioBlob.size, "bytes");
+
+              console.log("Complete audio type:", audioBlob.type);
+
+              // ----------------------------------
+              // SEND COMPLETE AUDIO
+              // ----------------------------------
+
+              if (socket && socket.readyState === WebSocket.OPEN) {
+                const buffer = await audioBlob.arrayBuffer();
+
+                console.log(
+                  "Sending complete audio:",
+                  buffer.byteLength,
+                  "bytes",
+                );
+
+                socket.send(buffer);
+
+                console.log("Audio sent to server");
+              } else {
+                console.error("WebSocket is not connected.");
+
+                showError("WebSocket disconnected before audio could be sent.");
+              }
+            } catch (error) {
+              console.error("Audio processing error:", error);
+
+              showError("Could not process recorded audio.");
+            } finally {
+              // ----------------------------------
+              // CLEAR AUDIO
+              // ----------------------------------
+
+              audioChunks = [];
+
+              // ----------------------------------
+              // STOP MICROPHONE TRACKS
+              // ----------------------------------
+
+              if (mediaStream) {
+                mediaStream.getTracks().forEach(function (track) {
+                  track.stop();
+                });
+
+                mediaStream = null;
+              }
+
+              mediaRecorder = null;
+            }
           };
 
-          /*
-           * Create one audio chunk every 1 second.
-           */
-          mediaRecorder.start(1000);
+          // IMPORTANT:
+          // Do NOT use start(1000).
+          //
+          // We need one complete WebM recording.
+          mediaRecorder.start();
         } catch (error) {
           console.error("Microphone error:", error);
 
-          alert(
+          showError(
             "Could not access microphone. Please allow microphone permission in your browser.",
           );
         }
       }
+
+      // ==========================================
+      // STOP MICROPHONE
+      // ==========================================
+
       function stopMicrophone() {
-        if (mediaRecorder) {
-          if (mediaRecorder.state !== "inactive") {
-            mediaRecorder.stop();
-          }
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+          console.log("Stopping MediaRecorder...");
 
-          mediaRecorder = null;
-        }
-
-        if (mediaStream) {
-          mediaStream.getTracks().forEach(function (track) {
-            track.stop();
-          });
-
-          mediaStream = null;
+          mediaRecorder.stop();
         }
 
         isRecording = false;
@@ -637,10 +790,17 @@
         updateMicrophoneUI(false);
       }
 
+      // ==========================================
+      // MICROPHONE UI
+      // ==========================================
+
       function updateMicrophoneUI(recording) {
         const button = document.getElementById("micButton");
+
         const icon = document.getElementById("micIcon");
+
         const text = document.getElementById("micText");
+
         const status = document.getElementById("micStatus");
 
         if (recording) {
@@ -653,9 +813,11 @@
           button.classList.add("border-red-200", "bg-red-50", "text-red-700");
 
           icon.textContent = "⏹️";
+
           text.textContent = "Stop Microphone";
 
           status.classList.remove("hidden");
+
           status.classList.add("flex");
 
           return;
@@ -666,11 +828,14 @@
         button.classList.add("border-slate-200", "bg-white", "text-slate-700");
 
         icon.textContent = "🎤";
+
         text.textContent = "Start Microphone";
 
         status.classList.remove("flex");
+
         status.classList.add("hidden");
       }
+
       // ==========================================
       // SEND MESSAGE
       // ==========================================
@@ -690,13 +855,13 @@
           return;
         }
 
-        addTranscriptMessage(message);
-
         socket.send(
           JSON.stringify({
             message: message,
           }),
         );
+
+        addTranscriptMessage(message);
 
         input.value = "";
       }
@@ -718,8 +883,8 @@
       // ==========================================
 
       function updateTranscript(message) {
-        // Message is already displayed
-        // when the user sends it.
+        // Transcript is already displayed
+        // by addTranscriptMessage().
       }
 
       function addTranscriptMessage(message) {
@@ -802,12 +967,12 @@
 
         if (!notes || notes.length === 0) {
           container.innerHTML = `
-                    <div
-                        class="rounded-lg border border-slate-200 p-4 text-sm text-slate-500"
-                    >
-                        No notes yet.
-                    </div>
-                    `;
+        <div
+          class="rounded-lg border border-slate-200 p-4 text-sm text-slate-500"
+        >
+          No notes yet.
+        </div>
+      `;
 
           return;
         }
@@ -827,7 +992,7 @@
 
           content.className = "mt-2 text-sm leading-6 text-slate-700";
 
-          content.textContent = note.content;
+          content.textContent = note.content || "";
 
           item.appendChild(topic);
 

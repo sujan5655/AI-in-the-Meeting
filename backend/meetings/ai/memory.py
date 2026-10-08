@@ -20,21 +20,33 @@ def get_or_create_meeting(
 
     return meeting
 
-
 def get_or_create_topic(
     meeting,
     topic_name,
 ):
-    topic = Topic.objects.filter(
-        meeting=meeting
-    ).annotate(
-        name_lower=Lower("name")
-    ).filter(
-        name_lower=topic_name.lower()
-    ).first()
+    topic = (
+        Topic.objects
+        .filter(
+            meeting=meeting,
+        )
+        .annotate(
+            name_lower=Lower("name")
+        )
+        .filter(
+            name_lower=topic_name.lower()
+        )
+        .first()
+    )
 
     if topic:
         return topic
+
+    Topic.objects.filter(
+        meeting=meeting,
+        is_current=True,
+    ).update(
+        is_current=False
+    )
 
     topic = Topic.objects.create(
         meeting=meeting,
@@ -43,7 +55,6 @@ def get_or_create_topic(
     )
 
     return topic
-
 
 def save_transcript(
     meeting,
@@ -125,17 +136,13 @@ def get_current_topic(meeting):
         is_current=True,
     ).first()
 
-
 def save_meeting_turn(
     meeting,
     topic,
     transcript,
     summary,
+    ai_response="",
 ):
-    """
-    Save the current meeting turn to PostgreSQL.
-    """
-
     save_transcript(
         meeting=meeting,
         topic=topic,
@@ -149,7 +156,13 @@ def save_meeting_turn(
         summary=summary,
     )
 
-
+    if ai_response:
+        MeetingNote.objects.create(
+            meeting=meeting,
+            topic=topic,
+            note_type="ai_response",
+            content=ai_response,
+        )
 
 def get_meeting_notes(meeting):
     notes = MeetingNote.objects.filter(
